@@ -19,5 +19,6 @@ This is a post-processing graphical user interface (GUI) for Newt Racing's Senec
  2. pass_GPS_ranges (2x12 Matrix) - 6 Pass Zones Provided as Rectangular Limits (2x2)
  3. init_range (2x2 Matrix) - Scope of the the TTN Map 
 
-* State Variables -> Continously Calculated Conditions*
- 1. 
+*State Variables -> Continously Calculated Conditions*
+ 1. run_team_pace (2xX Matrix, Time-Dependent) - Instantaneous Total Distance / Total Time, inclduing the timestamp and the mile time (minutes)
+ 2. run_runner_pace (2xX Matrix, Time-Dependent) - Instantaneous Runner Distance / Runenr Time, inclduing the timestamp and the mile time (minutes)
