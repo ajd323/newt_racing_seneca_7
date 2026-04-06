@@ -10,16 +10,25 @@
 #define FILLMEIN 0
 #warning "You must fill in your keys with the right values from the TTN control panel"
 #endif
+
 #ifndef LMIC_DEBUG_LEVEL
 #define LMIC_DEBUG_LEVEL 2
 #endif
+
 #define LMIC_PRINTF_TO Serial
+
 // Include Statements
 #include <Arduino_LoRaWAN_ttn.h>
 #include <lmic.h>
 #include <hal/hal.h>
 #include "keys.h"
+
 // Variables and Structs
+struct BatonPacket {
+    uint8_t batonID;
+    uint8_t data[7];
+} myPkt;
+
 uint8_t batonID = 1;
 uint64_t lastTime = 0;
 uint32_t bufferLength = 8;
@@ -29,17 +38,18 @@ static uint8_t messageBuffer[8] = {0, 1, 2, 3, 4, 5, 6, 7};
 #ifdef __cplusplus
 extern "C"{
 #endif
+
 void myStatusCallback(void * data, bool success){
   if(success){
     Serial.println("Uplink Succeeded");
   } else {
-    Serial.prinln("Uplink Failed")
+    Serial.println("Uplink Failed");
   }
 }
+
 #ifdef __cplusplus 
 }
 #endif
-
 
 // -- Class Definitions -- //
 class cMyLoRaWAN : public Arduino_LoRaWAN_ttn {
@@ -52,6 +62,7 @@ protected:
     virtual bool NetGetSessionState(SessionState &State) override;
     virtual bool GetAbpProvisioningInfo(Arduino_LoRaWAN::AbpProvisioningInfo*) override;
 };
+
 cMyLoRaWAN myLoRaWAN {};
 
 // -- Pin Map -- //
@@ -68,33 +79,48 @@ const cMyLoRaWAN::lmic_pinmap myPinMap = {
 // -- Functions -- //
 void setup() {
   Serial.begin(115200);
-  while(!Serial);
-  {
+  while(!Serial) {
     uint64_t lt = millis();
     while(!Serial && millis() - lt < 5000);
   }
+
   myLoRaWAN.begin(myPinMap);
   Serial.print("LMIC radio init status: ");
   Serial.println(os_getTime());
+
+  // Initialize packet
+  myPkt.batonID = batonID;
+  memset(myPkt.data, 0, 7);
+
   lastTime = millis();
-  if(myLoRaWAN.IsProvisioned())
+
+  if(myLoRaWAN.IsProvisioned()) {
     Serial.println("Provisioned for something");
-  else
+  } else {
     Serial.println("Not provisioned.");
-    myLoRaWAN.SendBuffer((uint8_t *) &myPkt, sizeof(myPkt), myStatusCallback, NULL, false, 1);
+  }
+  // Initial uplink
+  myLoRaWAN.SendBuffer((uint8_t *) &myPkt, sizeof(myPkt), myStatusCallback, NULL, false, 1);
 }
 
 void loop() {
   myLoRaWAN.loop();
+
   if (millis() - lastTime > 60000){
     Serial.println("Pass");
+
     messageBuffer[0]++;
+
     myPkt.batonID = batonID;
+    myPkt.data[0] = messageBuffer[0];
+
     myLoRaWAN.SendBuffer((uint8_t *) &myPkt, sizeof(myPkt), myStatusCallback, NULL, false, 1);
+
     lastTime = millis();
   }
 }
 
+// -- LoRaWAN Provisioning -- //
 bool
 cMyLoRaWAN::GetOtaaProvisioningInfo(
     OtaaProvisioningInfo *pInfo
