@@ -9,6 +9,8 @@ if "messages" not in st.session_state:
 
 def on_message(client, userdata, msg):
     """Callback for when a message is received from TTN."""
+    print("MQTT message received!")
+    print(msg.payload.decode())  # raw JSON from TTN
     payload = json.loads(msg.payload.decode())
     st.session_state.messages.append(payload)
 
