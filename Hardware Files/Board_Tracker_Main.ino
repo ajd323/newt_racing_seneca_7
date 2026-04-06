@@ -26,13 +26,13 @@
 // Variables and Structs
 struct BatonPacket {
     uint8_t batonID;
-    uint8_t data[7];
+    float latitude;
+    float longitude;
+    float battery;
 } myPkt;
 
 uint8_t batonID = 1;
 uint64_t lastTime = 0;
-uint32_t bufferLength = 8;
-static uint8_t messageBuffer[8] = {0, 1, 2, 3, 4, 5, 6, 7};
 
 // -- Callback Testing -- //
 #ifdef __cplusplus
@@ -90,7 +90,9 @@ void setup() {
 
   // Initialize packet
   myPkt.batonID = batonID;
-  memset(myPkt.data, 0, 7);
+  myPkt.latitude = 1.0f;   // placeholder
+  myPkt.longitude = 1.0f;  // placeholder
+  myPkt.battery = 1.0f;    // placeholder
 
   lastTime = millis();
 
@@ -99,6 +101,7 @@ void setup() {
   } else {
     Serial.println("Not provisioned.");
   }
+
   // Initial uplink
   myLoRaWAN.SendBuffer((uint8_t *) &myPkt, sizeof(myPkt), myStatusCallback, NULL, false, 1);
 }
@@ -109,10 +112,11 @@ void loop() {
   if (millis() - lastTime > 60000){
     Serial.println("Pass");
 
-    messageBuffer[0]++;
-
+    // Update packet (placeholder values)
     myPkt.batonID = batonID;
-    myPkt.data[0] = messageBuffer[0];
+    myPkt.latitude = 1.0f;
+    myPkt.longitude = 1.0f;
+    myPkt.battery = 1.0f;
 
     myLoRaWAN.SendBuffer((uint8_t *) &myPkt, sizeof(myPkt), myStatusCallback, NULL, false, 1);
 
