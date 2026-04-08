@@ -5,19 +5,14 @@ import pandas as pd
 import paho.mqtt.client as mqtt
 import streamlit as st
 
-# ---------------------------------------------------------
 # Session State Initialization
-# ---------------------------------------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 if "mqtt_started" not in st.session_state:
     st.session_state.mqtt_started = False
 
-
-# ---------------------------------------------------------
 # MQTT Callback
-# ---------------------------------------------------------
 def on_message(client, userdata, msg):
     """Callback for when a message is received from TTN."""
     try:
@@ -27,10 +22,7 @@ def on_message(client, userdata, msg):
     except Exception as e:
         print("Error parsing MQTT message:", e)
 
-
-# ---------------------------------------------------------
 # MQTT Startup
-# ---------------------------------------------------------
 def start_mqtt():
     """Connect to TTN MQTT and begin listening."""
     MQTT_USERNAME = st.secrets["MQTT_USERNAME"]
@@ -49,10 +41,7 @@ def start_mqtt():
 
     return client
 
-
-# ---------------------------------------------------------
 # DataFrame Builder (Robust)
-# ---------------------------------------------------------
 def build_dataframe():
     """Safely convert stored MQTT messages into a DataFrame."""
     messages = st.session_state.get("messages", [])
@@ -73,9 +62,7 @@ def build_dataframe():
     return pd.DataFrame(rows)
 
 
-# ---------------------------------------------------------
 # Streamlit UI
-# ---------------------------------------------------------
 st.title("📡 TTN Live Telemetry Dashboard")
 
 # Start MQTT only once
