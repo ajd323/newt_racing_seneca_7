@@ -6,16 +6,13 @@ import threading
 import time
 import paho.mqtt.client as mqtt
 
-# Match your original variables
 APP_ID = "ssr-baton-test"
 MQTT_USERNAME = "ssr-baton-test@ttn"
 MQTT_PASSWORD = "YOUR_API_KEY"
 BROKER = "nam1.cloud.thethings.network"
 PORT = 8883
 
-# Shared message buffer for Streamlit
 latest_messages = []
-
 Connected = False
 
 def on_connect(client, userdata, flags, rc):
@@ -28,13 +25,14 @@ def on_connect(client, userdata, flags, rc):
         print("Connection failed with rc =", rc)
 
 def on_message(client, userdata, message):
-    print("Message received:", message.payload)
+    print("MQTT message received:", message.payload)
 
     try:
         payload = json.loads(message.payload.decode())
     except:
         payload = {"raw": message.payload.decode()}
 
+    # Push to Streamlit
     latest_messages.append(payload)
 
 def start_mqtt_background():
@@ -53,7 +51,6 @@ def start_mqtt_background():
 
     client.connect(BROKER, PORT, keepalive=60)
 
-    # Run loop in background thread (Streamlit-safe)
     thread = threading.Thread(target=client.loop_forever, daemon=True)
     thread.start()
 
