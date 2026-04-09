@@ -11,6 +11,10 @@
 #warning "You must fill in your keys with the right values from the TTN control panel"
 #endif
 
+const int BUTTON_PIN_10 = 10;
+bool buttonState = HIGH;
+bool lastButtonState = HIGH;
+
 #ifndef LMIC_DEBUG_LEVEL
 #define LMIC_DEBUG_LEVEL 2
 #endif
@@ -26,13 +30,15 @@
 // Variables and Structs
 struct BatonPacket {
     uint8_t batonID;
+    uint8_t racerNumber;
     float latitude;
     float longitude;
     float battery;
 } myPkt;
 
 uint8_t batonID = 1;
-uint64_t lastTime = 0;
+uint8_t racerNumber = 1;
+unsigned long lastTime = 0;
 
 // -- Callback Testing -- //
 #ifdef __cplusplus
@@ -47,7 +53,7 @@ void myStatusCallback(void * data, bool success){
   }
 }
 
-#ifdef __cplusplus 
+#ifdef __cplusplus
 }
 #endif
 
@@ -78,25 +84,29 @@ const cMyLoRaWAN::lmic_pinmap myPinMap = {
 
 // -- Functions -- //
 void setup() {
+  pinMode(BUTTON_PIN_10, INPUT_PULLUP);
   Serial.begin(115200);
-  while(!Serial) {
+
+  while (!Serial) {
     uint64_t lt = millis();
-    while(!Serial && millis() - lt < 5000);
+    while (!Serial && millis() - lt < 5000);
   }
 
   myLoRaWAN.begin(myPinMap);
-  Serial.print("LMIC radio init status: ");
+
+  Serial.print("LMIC timer value: ");
   Serial.println(os_getTime());
 
   // Initialize packet
   myPkt.batonID = batonID;
-  myPkt.latitude = 1.0f;   // placeholder
-  myPkt.longitude = 1.0f;  // placeholder
-  myPkt.battery = 1.0f;    // placeholder
+  myPkt.racerNumber = racerNumber;
+  myPkt.latitude = 1.0f;    
+  myPkt.longitude = 1.0f;   
+  myPkt.battery = 1.0f;     
 
   lastTime = millis();
 
-  if(myLoRaWAN.IsProvisioned()) {
+  if (myLoRaWAN.IsProvisioned()) {
     Serial.println("Provisioned for something");
   } else {
     Serial.println("Not provisioned.");
@@ -106,14 +116,32 @@ void setup() {
   myLoRaWAN.SendBuffer((uint8_t *) &myPkt, sizeof(myPkt), myStatusCallback, NULL, false, 1);
 }
 
-void loop() {
+void loop() {  
   myLoRaWAN.loop();
 
-  if (millis() - lastTime > 60000){
+  buttonState = digitalRead(BUTTON_PIN_10);
+
+  // Detect a new button press only
+  if (lastButtonState == HIGH && buttonState == LOW) {
+    racerNumber++;   // each press changes racer number
+
+    // wrap around after racer 7
+    if (racerNumber > 7) {
+      racerNumber = 1;
+    }
+
+    Serial.print("Racer Number Updated: ");
+    Serial.println(racerNumber);
+  }
+
+  lastButtonState = buttonState;
+
+  if (millis() - lastTime > 60000) {
     Serial.println("Pass");
 
-    // Update packet (placeholder values)
+    // Update packet
     myPkt.batonID = batonID;
+    myPkt.racerNumber = racerNumber;
     myPkt.latitude = 1.0f;
     myPkt.longitude = 1.0f;
     myPkt.battery = 1.0f;
