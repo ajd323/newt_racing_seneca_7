@@ -1,66 +1,42 @@
-import json
-import ssl
+#!/usr/bin/env python3
+
+# from https://stackoverflow.com/questions/54292179/saving-mqtt-data-from-subscribe-topic-on-a-text-file
+
+import paho.mqtt.client as mqttClient
 import time
-import paho.mqtt.client as mqtt
 
-# Load secrets from secrets.toml (Python 3.9+ compatible)
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib
-
-import os
-
-# Auto-detect secrets file
-if os.path.exists(".secrets.toml"):
-    secrets_file = ".secrets.toml"
-elif os.path.exists("secrets.toml"):
-    secrets_file = "secrets.toml"
-else:
-    raise FileNotFoundError("No secrets.toml or .secrets.toml found in this folder.")
-
-with open(secrets_file, "rb") as f:
-    secrets = tomllib.load(f)
-
-MQTT_USERNAME = secrets["MQTT_USERNAME"]
-MQTT_PASSWORD = secrets["MQTT_PASSWORD"]
-MQTT_SERVER   = secrets["MQTT_SERVER"]
-APP_ID        = secrets["APP_ID"]
+def on_connect(client, userdata, flags, rc):
 
 
-def on_message(client, userdata, msg):
-    print("\n--- MQTT MESSAGE RECEIVED ---")
-    try:
-        payload = json.loads(msg.payload.decode())
-        print(json.dumps(payload, indent=2))
-    except Exception as e:
-        print("Error decoding message:", e)
+    if rc == 0:
 
+        print("Connected to broker")
 
-def start_mqtt():
-    client = mqtt.Client()
-    client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+        global Connected                #Use global variable
+        Connected = True                #Signal connection
 
-    # Use default TLS context, disable verification if needed
-    client.tls_set()
-    client.tls_insecure_set(True)
+    else:
+      
+        print("Connection failed")
+        
+def on_message(client, userdata, message):
+    print("")
+    print("Message received: "  + str(message.payload))
 
-    print("Connecting to TTN MQTT...")
-    client.connect(MQTT_SERVER, 8883)
-    client.subscribe(f"v3/{APP_ID}/devices/+/up")
-    client.loop_start()
+    with open('myData.txt','a+') as f: # You can change the data file name here
+         f.write(str(message.payload)[2:-1]+"\n")
 
-    print("Connected. Listening for uplinks...")
-    return client
+Connected = False   #global variable for the state of the connection
 
+broker_address= "nam1.cloud.thethings.network"  #host
+port = 1883                         #Broker port
+user = "ssr-baton-test@ttn" #<--  Put your TTN V3 app here                    #Connection username
+password = "NNSXS.Q2TYZ6MNINBWG4MDDC7KOCWU3NRWIBKTU5QDGYA.ILKJTCXVLQ3BWHWYM2WTNMCJRMO4B7IJYQERVX5HOIQTAGRQOFQQ" #<--  Put your TTN V3 API key in quotes           #Connection password
 
-if __name__ == "__main__":
-    client = start_mqtt()
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("Stopping MQTT listener...")
-        client.loop_stop()
-        client.disconnect()
+client = mqttClient.Client("Python")               #create new instance
+client.username_pw_set(user, password=password)    #set username and password
+client.on_connect= on_connect                      #attach function to callback
+client.on_message= on_message                      #attach function to callback
+client.connect(broker_address,port,60) #connect
+client.subscribe(f"v3/{user}/devices/+/up") #subscribe
+client.loop_forever() #then keep listening forever
