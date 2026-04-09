@@ -10,9 +10,6 @@ if "mqtt_started" not in st.session_state:
     start_mqtt_background()
     st.session_state.mqtt_started = True
 
-# Auto-refresh every second
-st_autorefresh = st.experimental_rerun
-
 # Display area
 log = st.empty()
 
@@ -23,6 +20,6 @@ if latest_messages:
 else:
     log.text("Waiting for MQTT messages...")
 
-# Trigger rerun in 1 second
+# Wait 1 second, then rerun the script
 time.sleep(1)
-st.experimental_rerun()
+st.rerun()
