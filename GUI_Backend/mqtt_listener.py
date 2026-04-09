@@ -44,20 +44,20 @@ def start_mqtt():
 # -----------------------------
 st.title("TTN Live Telemetry Dashboard")
 
-# Start MQTT only AFTER first render
-if "mqtt_started" not in st.session_state:
-    st.session_state.mqtt_started = True
+# FIRST RUN: render UI only
+if "first_run_done" not in st.session_state:
+    st.session_state.first_run_done = True
     st.write("Initializing MQTT…")
-    st.experimental_rerun()
+    st.rerun()
 
-# Start MQTT on second run
+# SECOND RUN: start MQTT thread
 if "mqtt_thread_started" not in st.session_state:
     start_mqtt()
     st.session_state.mqtt_thread_started = True
     st.write("MQTT thread started")
-    st.experimental_rerun()
+    st.rerun()
 
-# Display messages
+# SUBSEQUENT RUNS: show messages
 log = st.empty()
 
 if st.session_state.latest_messages:
@@ -67,4 +67,4 @@ else:
     log.text("Waiting for MQTT messages...")
 
 time.sleep(1)
-st.experimental_rerun()
+st.rerun()
