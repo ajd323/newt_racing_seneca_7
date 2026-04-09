@@ -4,15 +4,16 @@ import ssl
 import json
 import time
 import queue
+import pandas as pd
 
 # -----------------------------
 # TTN MQTT CONFIG
 # -----------------------------
-APP_ID      = "ssr-baton-test"
-MQTT_USER   = "ssr-baton-test@ttn"
-MQTT_PASS   = "NNSXS.Q2TYZ6MNINBWG4MDDC7KOCWU3NRWIBKTU5QDGYA.ILKJTCXVLQ3BWHWYM2WTNMCJRMO4B7IJYQERVX5HOIQTAGRQOFQQ"
-BROKER      = "nam1.cloud.thethings.network"
-PORT        = 8883
+APP_ID    = "ssr-baton-test"
+MQTT_USER = "ssr-baton-test@ttn"
+MQTT_PASS = "NNSXS.Q2TYZ6MNINBWG4MDDC7KOCWU3NRWIBKTU5QDGYA.ILKJTCXVLQ3BWHWYM2WTNMCJRMO4B7IJYQERVX5HOIQTAGRQOFQQ"
+BROKER    = "nam1.cloud.thethings.network"
+PORT      = 8883
 
 # -----------------------------
 # SESSION STATE INIT
@@ -21,10 +22,10 @@ if "msg_queue" not in st.session_state:
     st.session_state.msg_queue = queue.Queue()
 
 if "messages" not in st.session_state:
-    st.session_state.messages = []   # list of dicts: {time, baton_id, lat, lon, battery, rssi}
+    st.session_state.messages = []
 
 # -----------------------------
-# MQTT CALLBACKS  (v2 API — fixes deprecation warning)
+# MQTT CALLBACKS
 # -----------------------------
 def on_connect(client, userdata, flags, reason_code, properties):
     if reason_code == 0:
@@ -40,21 +41,21 @@ def on_message(client, userdata, msg):
     dp  = raw.get("uplink_message", {}).get("decoded_payload", {})
     rx  = raw.get("uplink_message", {}).get("rx_metadata", [{}])[0]
     row = {
-        "time":      raw.get("received_at", ""),
-        "baton_id":  dp.get("batonID"),
-        "lat":       dp.get("latitude"),
-        "lon":       dp.get("longitude"),
-        "battery":   dp.get("battery"),
-        "rssi":      rx.get("rssi"),
+        "time":     raw.get("received_at", ""),
+        "baton_id": dp.get("batonID"),
+        "lat":      dp.get("latitude"),
+        "lon":      dp.get("longitude"),
+        "battery":  dp.get("battery"),
+        "rssi":     rx.get("rssi"),
     }
-    userdata["queue"].put(row)   # thread-safe — no session_state touch here
+    userdata["queue"].put(row)
 
 # -----------------------------
 # START MQTT ONCE
 # -----------------------------
 def start_mqtt(q):
     client = mqtt.Client(
-        mqtt.CallbackAPIVersion.VERSION2,
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
         protocol=mqtt.MQTTv311
     )
     client.username_pw_set(MQTT_USER, MQTT_PASS)
@@ -63,14 +64,14 @@ def start_mqtt(q):
     client.on_connect = on_connect
     client.on_message = on_message
     client.connect(BROKER, PORT, keepalive=60)
-    client.loop_start()          # non-blocking — no extra Thread needed
+    client.loop_start()
 
 if "mqtt_started" not in st.session_state:
     start_mqtt(st.session_state.msg_queue)
     st.session_state.mqtt_started = True
 
 # -----------------------------
-# DRAIN QUEUE → SESSION STATE  (main thread only)
+# DRAIN QUEUE → SESSION STATE
 # -----------------------------
 q = st.session_state.msg_queue
 while not q.empty():
@@ -87,14 +88,11 @@ st.caption(f"Packets received: {len(st.session_state.messages)}")
 msgs = st.session_state.messages
 
 if msgs:
-    import pandas as pd
     df = pd.DataFrame(msgs)
     df["time"] = pd.to_datetime(df["time"]).dt.strftime("%H:%M:%S")
 
-    # Live data table
     st.dataframe(df[::-1], use_container_width=True)
 
-    # Map — only rows with real GPS
     gps = df[(df["lat"] != 0) & (df["lon"] != 0)].copy()
     if not gps.empty:
         gps = gps.rename(columns={"lat": "latitude", "lon": "longitude"})
