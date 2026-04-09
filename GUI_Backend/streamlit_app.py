@@ -3,75 +3,106 @@ import paho.mqtt.client as mqtt
 import ssl
 import json
 import time
-import threading
+import queue
 
 # -----------------------------
 # TTN MQTT CONFIG
 # -----------------------------
-APP_ID = "ssr-baton-test"
-MQTT_USERNAME = "ssr-baton-test@ttn"
-MQTT_PASSWORD = "NNSXS.Q2TYZ6MNINBWG4MDDC7KOCWU3NRWIBKTU5QDGYA.ILKJTCXVLQ3BWHWYM2WTNMCJRMO4B7IJYQERVX5HOIQTAGRQOFQQ"
-BROKER = "nam1.cloud.thethings.network"
-PORT = 8883
-
-# Shared buffer for messages
-if "latest_messages" not in st.session_state:
-    st.session_state.latest_messages = []
+APP_ID      = "ssr-baton-test"
+MQTT_USER   = "ssr-baton-test@ttn"
+MQTT_PASS   = "NNSXS.Q2TYZ6MNINBWG4MDDC7KOCWU3NRWIBKTU5QDGYA.ILKJTCXVLQ3BWHWYM2WTNMCJRMO4B7IJYQERVX5HOIQTAGRQOFQQ"
+BROKER      = "nam1.cloud.thethings.network"
+PORT        = 8883
 
 # -----------------------------
-# MQTT CALLBACKS
+# SESSION STATE INIT
 # -----------------------------
-def on_connect(client, userdata, flags, rc):
-    if rc == 0:
-        print("Connected to TTN MQTT")
+if "msg_queue" not in st.session_state:
+    st.session_state.msg_queue = queue.Queue()
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []   # list of dicts: {time, baton_id, lat, lon, battery, rssi}
+
+# -----------------------------
+# MQTT CALLBACKS  (v2 API — fixes deprecation warning)
+# -----------------------------
+def on_connect(client, userdata, flags, reason_code, properties):
+    if reason_code == 0:
         client.subscribe(f"v3/{APP_ID}/devices/+/up")
     else:
-        print("Connection failed with rc =", rc)
+        print(f"MQTT connect failed: {reason_code}")
 
 def on_message(client, userdata, msg):
-    print("MQTT message received:", msg.payload)
-
     try:
-        payload = json.loads(msg.payload.decode())
-    except:
-        payload = {"raw": msg.payload.decode()}
-
-    st.session_state.latest_messages.append(payload)
+        raw = json.loads(msg.payload.decode())
+    except Exception:
+        return
+    dp  = raw.get("uplink_message", {}).get("decoded_payload", {})
+    rx  = raw.get("uplink_message", {}).get("rx_metadata", [{}])[0]
+    row = {
+        "time":      raw.get("received_at", ""),
+        "baton_id":  dp.get("batonID"),
+        "lat":       dp.get("latitude"),
+        "lon":       dp.get("longitude"),
+        "battery":   dp.get("battery"),
+        "rssi":      rx.get("rssi"),
+    }
+    userdata["queue"].put(row)   # thread-safe — no session_state touch here
 
 # -----------------------------
-# START MQTT CLIENT (ONCE)
+# START MQTT ONCE
 # -----------------------------
-def start_mqtt():
-    client = mqtt.Client(protocol=mqtt.MQTTv311)
-    client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+def start_mqtt(q):
+    client = mqtt.Client(
+        mqtt.CallbackAPIVersion.VERSION2,
+        protocol=mqtt.MQTTv311
+    )
+    client.username_pw_set(MQTT_USER, MQTT_PASS)
     client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
-
+    client.user_data_set({"queue": q})
     client.on_connect = on_connect
     client.on_message = on_message
-
     client.connect(BROKER, PORT, keepalive=60)
-
-    thread = threading.Thread(target=client.loop_forever, daemon=True)
-    thread.start()
+    client.loop_start()          # non-blocking — no extra Thread needed
 
 if "mqtt_started" not in st.session_state:
-    start_mqtt()
+    start_mqtt(st.session_state.msg_queue)
     st.session_state.mqtt_started = True
 
 # -----------------------------
-# STREAMLIT UI
+# DRAIN QUEUE → SESSION STATE  (main thread only)
 # -----------------------------
-st.title("TTN Live Telemetry Dashboard")
+q = st.session_state.msg_queue
+while not q.empty():
+    st.session_state.messages.append(q.get_nowait())
 
-log = st.empty()
+st.session_state.messages = st.session_state.messages[-200:]
 
-if st.session_state.latest_messages:
-    text = "\n\n".join(
-        json.dumps(m, indent=2) for m in st.session_state.latest_messages[-50:]
-    )
-    log.text(text)
+# -----------------------------
+# UI
+# -----------------------------
+st.title("🏃 Newt Racing — Live Baton Tracker")
+st.caption(f"Packets received: {len(st.session_state.messages)}")
+
+msgs = st.session_state.messages
+
+if msgs:
+    import pandas as pd
+    df = pd.DataFrame(msgs)
+    df["time"] = pd.to_datetime(df["time"]).dt.strftime("%H:%M:%S")
+
+    # Live data table
+    st.dataframe(df[::-1], use_container_width=True)
+
+    # Map — only rows with real GPS
+    gps = df[(df["lat"] != 0) & (df["lon"] != 0)].copy()
+    if not gps.empty:
+        gps = gps.rename(columns={"lat": "latitude", "lon": "longitude"})
+        st.map(gps[["latitude", "longitude"]])
+    else:
+        st.info("GPS coordinates are all zero — device may not have a fix yet.")
 else:
-    log.text("Waiting for MQTT messages...")
+    st.info("Waiting for MQTT messages…")
 
-time.sleep(1)
+time.sleep(2)
 st.rerun()
