@@ -6,10 +6,15 @@ import paho.mqtt.client as mqttClient
 import time
 
 def on_connect(client, userdata, flags, rc):
+
+
     if rc == 0:
+
         print("Connected to broker")
+
         global Connected                #Use global variable
         Connected = True                #Signal connection
+
     else:
       
         print("Connection failed")
@@ -18,14 +23,14 @@ def on_message(client, userdata, message):
     print("")
     print("Message received: "  + str(message.payload))
 
-    with open('myData.txt','a+') as f:
+    with open('myData.txt','a+') as f: # You can change the data file name here
          f.write(str(message.payload)[2:-1]+"\n")
 
 Connected = False   #global variable for the state of the connection
 
 broker_address= "nam1.cloud.thethings.network"  #host
 port = 1883                         #Broker port
-user = "baton-prototype-1@ttn" #<--  Put your TTN V3 app here                    #Connection username
+user = "ssr-baton-test@ttn" #<--  Put your TTN V3 app here                    #Connection username
 password = "NNSXS.Q2TYZ6MNINBWG4MDDC7KOCWU3NRWIBKTU5QDGYA.ILKJTCXVLQ3BWHWYM2WTNMCJRMO4B7IJYQERVX5HOIQTAGRQOFQQ" #<--  Put your TTN V3 API key in quotes           #Connection password
 
 client = mqttClient.Client("Python")               #create new instance
