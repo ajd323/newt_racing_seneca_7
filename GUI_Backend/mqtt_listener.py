@@ -6,17 +6,11 @@ import paho.mqtt.client as mqttClient
 import time
 
 def on_connect(client, userdata, flags, rc):
-
-
     if rc == 0:
-
         print("Connected to broker")
-
         global Connected                #Use global variable
         Connected = True                #Signal connection
-
     else:
-      
         print("Connection failed")
         
 def on_message(client, userdata, message):
