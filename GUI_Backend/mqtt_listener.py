@@ -6,6 +6,7 @@ import paho.mqtt.client as mqttClient
 import time
 
 def on_connect(client, userdata, flags, rc):
+    print("on_connect fired with rc =", rc)
     if rc == 0:
         print("Connected to broker")
         global Connected                #Use global variable
