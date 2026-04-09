@@ -1,37 +1,70 @@
-#!/usr/bin/env python3
-
-# from https://stackoverflow.com/questions/54292179/saving-mqtt-data-from-subscribe-topic-on-a-text-file
-
-import paho.mqtt.client as mqttClient
+import streamlit as st
+import paho.mqtt.client as mqtt
+import ssl
+import json
 import time
+import threading
+
+APP_ID = "ssr-baton-test"
+MQTT_USERNAME = "ssr-baton-test@ttn"
+MQTT_PASSWORD = "YOUR_API_KEY"
+BROKER = "nam1.cloud.thethings.network"
+PORT = 8883
+
+if "latest_messages" not in st.session_state:
+    st.session_state.latest_messages = []
 
 def on_connect(client, userdata, flags, rc):
     print("on_connect fired with rc =", rc)
     if rc == 0:
-        print("Connected to broker")
-        global Connected                #Use global variable
-        Connected = True                #Signal connection
+        client.subscribe(f"v3/{APP_ID}/devices/+/up")
     else:
         print("Connection failed")
-        
-def on_message(client, userdata, message):
-    print("")
-    print("Message received: "  + str(message.payload))
 
-    with open('myData.txt','a+') as f: # You can change the data file name here
-         f.write(str(message.payload)[2:-1]+"\n")
+def on_message(client, userdata, msg):
+    print("MQTT message received:", msg.payload)
+    try:
+        payload = json.loads(msg.payload.decode())
+    except:
+        payload = {"raw": msg.payload.decode()}
+    st.session_state.latest_messages.append(payload)
 
-Connected = False   #global variable for the state of the connection
+def start_mqtt():
+    print("Starting MQTT thread...")
+    client = mqtt.Client(protocol=mqtt.MQTTv311)
+    client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+    client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(BROKER, PORT, keepalive=60)
+    threading.Thread(target=client.loop_forever, daemon=True).start()
 
-broker_address= "nam1.cloud.thethings.network"  #host
-port = 1883                         #Broker port
-user = "ssr-baton-test@ttn" #<--  Put your TTN V3 app here                    #Connection username
-password = "NNSXS.Q2TYZ6MNINBWG4MDDC7KOCWU3NRWIBKTU5QDGYA.ILKJTCXVLQ3BWHWYM2WTNMCJRMO4B7IJYQERVX5HOIQTAGRQOFQQ" #<--  Put your TTN V3 API key in quotes           #Connection password
+# -----------------------------
+# STREAMLIT UI
+# -----------------------------
+st.title("TTN Live Telemetry Dashboard")
 
-client = mqttClient.Client("Python")               #create new instance
-client.username_pw_set(user, password=password)    #set username and password
-client.on_connect= on_connect                      #attach function to callback
-client.on_message= on_message                      #attach function to callback
-client.connect(broker_address,port,60) #connect
-client.subscribe(f"v3/{user}/devices/+/up") #subscribe
-client.loop_forever() #then keep listening forever
+# Start MQTT only AFTER first render
+if "mqtt_started" not in st.session_state:
+    st.session_state.mqtt_started = True
+    st.write("Initializing MQTT…")
+    st.experimental_rerun()
+
+# Start MQTT on second run
+if "mqtt_thread_started" not in st.session_state:
+    start_mqtt()
+    st.session_state.mqtt_thread_started = True
+    st.write("MQTT thread started")
+    st.experimental_rerun()
+
+# Display messages
+log = st.empty()
+
+if st.session_state.latest_messages:
+    text = "\n\n".join(json.dumps(m, indent=2) for m in st.session_state.latest_messages[-50:])
+    log.text(text)
+else:
+    log.text("Waiting for MQTT messages...")
+
+time.sleep(1)
+st.experimental_rerun()
