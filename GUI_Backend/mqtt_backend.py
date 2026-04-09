@@ -7,13 +7,13 @@ import paho.mqtt.client as mqtt
 
 APP_ID = "ssr-baton-test"
 MQTT_USERNAME = "ssr-baton-test@ttn"
-MQTT_PASSWORD = "NNSXS.Q2TYZ6MNINBWG4MDDC7KOCWU3NRWIBKTU5QDGYA.ILKJTCXVLQ3BWHWYM2WTNMCJRMO4B7IJYQERVX5HOIQTAGRQOFQQ"
+MQTT_PASSWORD = "YOUR_API_KEY"
 MQTT_SERVER = "nam1.cloud.thethings.network"
 PORT = 8883
 
 latest_messages = []
 
-def on_connect(client, userdata, flags, rc, properties=None):
+def on_connect(client, userdata, flags, rc):
     print("MQTT connected with rc =", rc)
     if rc == 0:
         client.subscribe(f"v3/{APP_ID}/devices/+/up")
@@ -28,14 +28,14 @@ def on_message(client, userdata, msg):
         print("Decode error:", e)
 
 def start_mqtt_background():
+    # IMPORTANT: MQTTv311 works on Streamlit Cloud, MQTTv5 does NOT
     client = mqtt.Client(
         client_id="StreamlitListener",
-        protocol=mqtt.MQTTv5,
-        transport="tcp",
-        callback_api_version=5
+        protocol=mqtt.MQTTv311
     )
 
     client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+
     client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
     client.tls_insecure_set(False)
 
