@@ -2,3 +2,5 @@ streamlit
 paho-mqtt
 pandas
 pydeck
+folium
+streamlit-folium
