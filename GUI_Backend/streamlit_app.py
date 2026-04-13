@@ -1,18 +1,5 @@
 """
 streamlit_app.py — Newt Racing Seneca 7 Live Baton Tracker
-------------------------------------------------------------
-FIX SUMMARY (vs original):
-  1. st.session_state cannot be written from a background thread — all
-     cross-thread communication now goes through a thread-safe queue.Queue.
-  2. MQTT client is only ever started ONCE per browser session via a flag
-     in session_state; the original had a race condition that could spawn
-     multiple clients.
-  3. on_connect now matches the MQTTv311 signature (4 args, not 5).
-  4. MQTT topic corrected to include @ttn tenant:
-         v3/{APP_ID}@ttn/devices/+/up
-  5. Draining the queue and calling st.rerun() every 2 s gives live updates
-     without the blank-screen problem caused by writing session_state from
-     a thread.
 """
 
 import json
@@ -20,9 +7,11 @@ import queue
 import ssl
 import time
 
+import folium
 import pandas as pd
 import paho.mqtt.client as mqtt
 import streamlit as st
+from streamlit_folium import st_folium
 
 # ── Config ─────────────────────────────────────────────────────────────────
 APP_ID    = "ssr-baton-test"
@@ -30,30 +19,28 @@ MQTT_USER = "ssr-baton-test@ttn"
 MQTT_PASS = "NNSXS.Q2TYZ6MNINBWG4MDDC7KOCWU3NRWIBKTU5QDGYA.ILKJTCXVLQ3BWHWYM2WTNMCJRMO4B7IJYQERVX5HOIQTAGRQOFQQ"
 BROKER    = "nam1.cloud.thethings.network"
 PORT      = 8883
-# Correct topic: must include @ttn (tenant) after the app-id
 TOPIC     = f"v3/{APP_ID}@ttn/devices/+/up"
 
 # ── Session-state initialisation ────────────────────────────────────────────
-# These run on every rerun but are only assigned the first time.
 if "msg_queue" not in st.session_state:
-    st.session_state.msg_queue = queue.Queue()   # thread-safe; MQTT writes here
+    st.session_state.msg_queue = queue.Queue()
 
 if "messages" not in st.session_state:
-    st.session_state.messages = []               # main-thread accumulator
+    st.session_state.messages = []
+
+if "button_events" not in st.session_state:
+    st.session_state.button_events = []  # list of {lat, lon, time, baton_id}
 
 if "mqtt_status" not in st.session_state:
     st.session_state.mqtt_status = "Not connected"
 
-# ── MQTT callbacks ──────────────────────────────────────────────────────────
-# IMPORTANT: callbacks must never touch st.session_state directly —
-# they run in paho's background thread and Streamlit will silently drop
-# the writes (or crash).  Use a Queue instead.
+if "prev_button_counts" not in st.session_state:
+    st.session_state.prev_button_counts = {}  # device_id -> last buttonPressed value
 
+# ── MQTT callbacks ──────────────────────────────────────────────────────────
 def on_connect(client, userdata, flags, rc):
-    """Called by paho in its own thread when the TCP handshake completes."""
     if rc == 0:
         client.subscribe(TOPIC, qos=1)
-        # Signal the main thread via the queue
         userdata.put({"_status": "connected"})
     else:
         userdata.put({"_status": f"connect failed rc={rc}"})
@@ -62,7 +49,6 @@ def on_disconnect(client, userdata, rc):
     userdata.put({"_status": f"disconnected rc={rc}"})
 
 def on_message(client, userdata, msg):
-    """Parse a TTN uplink and push a flat dict onto the queue."""
     try:
         raw = json.loads(msg.payload.decode())
     except Exception:
@@ -73,17 +59,16 @@ def on_message(client, userdata, msg):
     rx     = (uplink.get("rx_metadata") or [{}])[0]
 
     row = {
-        "time"       : raw.get("received_at", ""),
-        "device_id"  : raw.get("end_device_ids", {}).get("device_id", ""),
-        "baton_id"   : dp.get("batonID"),
-        "racer_num"  : dp.get("racerNumber"),
-        "lat"        : dp.get("latitude"),
-        "lon"        : dp.get("longitude"),
-        "battery"    : dp.get("battery"),
-        "rssi"       : rx.get("rssi"),
-        "snr"        : rx.get("snr"),
+        "time"          : raw.get("received_at", ""),
+        "device_id"     : raw.get("end_device_ids", {}).get("device_id", ""),
+        "baton_id"      : dp.get("batonID"),
+        "buttonPressed" : dp.get("buttonPressed", 0),
+        "lat"           : dp.get("latitude"),
+        "lon"           : dp.get("longitude"),
+        "rssi"          : rx.get("rssi"),
+        "snr"           : rx.get("snr"),
     }
-    userdata.put(row)   # ← safe cross-thread handoff
+    userdata.put(row)
 
 # ── Start MQTT exactly once per session ─────────────────────────────────────
 if "mqtt_started" not in st.session_state:
@@ -95,26 +80,41 @@ if "mqtt_started" not in st.session_state:
     client.username_pw_set(MQTT_USER, MQTT_PASS)
     client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
     client.tls_insecure_set(False)
-    client.user_data_set(q)          # queue is the userdata — safe from any thread
+    client.user_data_set(q)
     client.on_connect    = on_connect
     client.on_disconnect = on_disconnect
     client.on_message    = on_message
     client.connect(BROKER, PORT, keepalive=60)
-    client.loop_start()              # starts paho's background thread
+    client.loop_start()
     st.session_state.mqtt_started = True
 
 # ── Drain queue → session state (main thread only) ──────────────────────────
 q = st.session_state.msg_queue
-drained = 0
 while not q.empty():
     item = q.get_nowait()
     if "_status" in item:
         st.session_state.mqtt_status = item["_status"]
     else:
         st.session_state.messages.append(item)
-        drained += 1
 
-# Keep only the most recent 500 records
+        # ── Button press detection ──
+        device_id = item.get("device_id", "")
+        current_count = item.get("buttonPressed", 0) or 0
+        prev_count = st.session_state.prev_button_counts.get(device_id, 0)
+
+        # If buttonPressed count increased, record a button event at this location
+        if current_count > prev_count and item.get("lat") and item.get("lon"):
+            for _ in range(current_count - prev_count):
+                st.session_state.button_events.append({
+                    "lat"      : item["lat"],
+                    "lon"      : item["lon"],
+                    "time"     : item["time"],
+                    "baton_id" : item.get("baton_id"),
+                    "device_id": device_id,
+                })
+
+        st.session_state.prev_button_counts[device_id] = current_count
+
 st.session_state.messages = st.session_state.messages[-500:]
 
 # ── UI ───────────────────────────────────────────────────────────────────────
@@ -123,7 +123,8 @@ st.title("🏃 Newt Racing — Seneca 7 Live Baton Tracker")
 status_color = "🟢" if st.session_state.mqtt_status == "connected" else "🔴"
 st.caption(
     f"{status_color} MQTT: {st.session_state.mqtt_status}  |  "
-    f"Packets received: {len(st.session_state.messages)}"
+    f"Packets received: {len(st.session_state.messages)}  |  "
+    f"Button events: {len(st.session_state.button_events)}"
 )
 
 msgs = st.session_state.messages
@@ -138,19 +139,72 @@ if msgs:
         df.sort_values("time")
           .groupby("baton_id")
           .last()
-          .reset_index()[["baton_id", "racer_num", "lat", "lon", "battery", "rssi", "time"]]
+          .reset_index()[["baton_id", "buttonPressed", "lat", "lon", "rssi", "time"]]
     )
     st.dataframe(latest, use_container_width=True)
 
-    # ── Map ──────────────────────────────────────────────────────────────
+    # ── Folium Map with blue button-press pins ───────────────────────────
     gps = df.dropna(subset=["lat", "lon"])
     gps = gps[(gps["lat"] != 0) & (gps["lon"] != 0)].copy()
+
+    st.subheader("GPS Track & Button Press Locations")
+
+    # Default center: Seneca Lake area
+    center_lat = gps["lat"].mean() if not gps.empty else 42.444
+    center_lon = gps["lon"].mean() if not gps.empty else -76.502
+
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=13)
+
+    # Draw GPS track as polyline per device
     if not gps.empty:
-        st.subheader("GPS Track")
-        gps = gps.rename(columns={"lat": "latitude", "lon": "longitude"})
-        st.map(gps[["latitude", "longitude"]])
+        for device_id, group in gps.groupby("device_id"):
+            group = group.sort_values("time")
+            coords = list(zip(group["lat"], group["lon"]))
+            if len(coords) > 1:
+                folium.PolyLine(
+                    coords,
+                    color="red",
+                    weight=3,
+                    opacity=0.7,
+                    tooltip=f"Track: {device_id}"
+                ).add_to(m)
+
+            # Latest position marker (red)
+            last = group.iloc[-1]
+            folium.Marker(
+                location=[last["lat"], last["lon"]],
+                tooltip=f"Baton {last.get('baton_id')} — Latest position",
+                icon=folium.Icon(color="red", icon="flag")
+            ).add_to(m)
+
+    # Blue pins for button press events
+    for event in st.session_state.button_events:
+        if event.get("lat") and event.get("lon"):
+            t = event.get("time", "")
+            if hasattr(t, "strftime"):
+                t_str = t
+            else:
+                try:
+                    t_str = pd.to_datetime(t, utc=True).strftime("%H:%M:%S")
+                except Exception:
+                    t_str = str(t)
+
+            folium.Marker(
+                location=[event["lat"], event["lon"]],
+                tooltip=f"🔵 Button pressed — Baton {event.get('baton_id')} at {t_str}",
+                icon=folium.Icon(color="blue", icon="hand-up", prefix="glyphicon")
+            ).add_to(m)
+
+    st_folium(m, width=700, height=500)
+
+    if st.session_state.button_events:
+        st.subheader("Button Press Log")
+        btn_df = pd.DataFrame(st.session_state.button_events)
+        btn_df["time"] = pd.to_datetime(btn_df["time"], utc=True, errors="coerce")
+        btn_df["time"] = btn_df["time"].dt.strftime("%H:%M:%S")
+        st.dataframe(btn_df.iloc[::-1], use_container_width=True)
     else:
-        st.info("No valid GPS fixes yet — device may still be acquiring satellites.")
+        st.info("No button presses recorded yet.")
 
     # ── Raw message log ──────────────────────────────────────────────────
     with st.expander("Raw message log (newest first)"):
