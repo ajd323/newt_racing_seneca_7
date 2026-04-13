@@ -2,207 +2,169 @@
 // Baton Tracker — Newt Racing Seneca 7
 // Cornell MAE 4220 IoT
 // Author: Andrew D'Onofrio (ajd323)
-//
-// FIX SUMMARY (vs original):
-//   1. GPS is NOT wired up — latitude/longitude are hardcoded to 1.0f as
-//      placeholders.  Added clear TODO markers and a commented example of
-//      how to integrate a GPS module (TinyGPSPlus + Serial2).
-//   2. Added software button debounce (50 ms) to prevent false racer-number
-//      increments from contact bounce.
-//   3. Serial wait loop was potentially infinite on boards without USB CDC
-//      auto-detect; added a 5-second total timeout.
-//   4. Corrected: lastTime initialized after LoRaWAN begin (not before),
-//      so the first 60-second window is accurate.
+// NOTE BUTTON LOGIC (PRESSED = 0, NOT PRESSED = 1)
 
-// ── Pre-Initialization ────────────────────────────────────────────────────
-#ifdef COMPILE_REGRESSION_TEST
-  #define FILLMEIN 0
-#else
-  #define FILLMEIN 0
-  #warning "Fill in your TTN keys in keys.h"
-#endif
-
-#ifndef LMIC_DEBUG_LEVEL
-  #define LMIC_DEBUG_LEVEL 2
-#endif
+// ── Pre-Initialization ──
+#define LMIC_DEBUG_LEVEL 2
 #define LMIC_PRINTF_TO Serial
+#ifdef COMPILE_REGRESSION_TEST
+#define FILLMEIN 0
+#else
+#define FILLMEIN (#Don't edit this stuff. Fill in the appropriate FILLMEIN values.)
+#warning "You must fill in your keys with the right values from the TTN control panel"
+#endif
 
-// ── Includes ─────────────────────────────────────────────────────────────
+// ── Includes ──
 #include <Arduino_LoRaWAN_ttn.h>
 #include <lmic.h>
 #include <hal/hal.h>
 #include "keys.h"
 
-// TODO: Uncomment these two lines when a GPS module is wired to Serial1/Serial2
-// #include <TinyGPSPlus.h>
-// TinyGPSPlus gps;
+// ── Baton Constants ──
+const uint8_t BATON_ID = 1;
 
-// ── Constants ─────────────────────────────────────────────────────────────
-const int    BUTTON_PIN       = 10;
-const int    MAX_RACER        = 7;
-const unsigned long TX_INTERVAL_MS  = 60000UL;   // 1 minute
-const unsigned long DEBOUNCE_MS     =    50UL;   // button debounce window
+// ── Button Constants ──
+const int OUTPUT_PIN = 12;
+const int BUTTON_PIN = 10;
+bool buttonState = true;
+int buttonPressed = 0;
 
-// ── Packet structure ──────────────────────────────────────────────────────
-// IMPORTANT: the TTN uplink decoder (uplink_decoder.js) assumes ARM Cortex-M
-// struct padding.  The layout is:
-//   [0]    batonID      (uint8)
-//   [1]    racerNumber  (uint8)
-//   [2-3]  padding      (2 bytes, added by ARM compiler for float alignment)
-//   [4-7]  latitude     (float, little-endian)
-//   [8-11] longitude    (float, little-endian)
-//   [12-15] battery     (float, little-endian)
-// Total transmitted: 16 bytes
-struct BatonPacket {
-    uint8_t batonID;
-    uint8_t racerNumber;
-    float   latitude;
-    float   longitude;
-    float   battery;
-} myPkt;
+// ── Buffer Constants ──
+uint64_t lastTime = 0;
+uint32_t bufferLength = 8;
+static uint8_t messageBuffer[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+const unsigned long buffer_interval = 30000;
 
-// ── State ─────────────────────────────────────────────────────────────────
-const uint8_t BATON_ID   = 1;   // hard-code per device
-uint8_t       racerNumber = 1;
-
-bool          lastButtonState   = HIGH;
-unsigned long lastDebounceTime  = 0;
-bool          pendingButtonRead = HIGH;
-
-unsigned long lastTxTime = 0;
-
-// ── LoRaWAN class ────────────────────────────────────────────────────────
-class cMyLoRaWAN : public Arduino_LoRaWAN_ttn {
-public:
-    cMyLoRaWAN() {}
-protected:
-    virtual bool GetOtaaProvisioningInfo(Arduino_LoRaWAN::OtaaProvisioningInfo*) override;
-    virtual void NetSaveSessionInfo(const SessionInfo&, const uint8_t*, size_t) override;
-    virtual void NetSaveSessionState(const SessionState&) override;
-    virtual bool NetGetSessionState(SessionState&) override;
-    virtual bool GetAbpProvisioningInfo(Arduino_LoRaWAN::AbpProvisioningInfo*) override;
-};
-cMyLoRaWAN myLoRaWAN {};
-
-// ── Pin map (Adafruit Feather M0 LoRa) ───────────────────────────────────
-const cMyLoRaWAN::lmic_pinmap myPinMap = {
-    .nss            = 8,
-    .rxtx           = cMyLoRaWAN::lmic_pinmap::LMIC_UNUSED_PIN,
-    .rst            = 4,
-    .dio            = { 3, 6, cMyLoRaWAN::lmic_pinmap::LMIC_UNUSED_PIN },
-    .rxtx_rx_active = 0,
-    .rssi_cal       = 0,
-    .spi_freq       = 8000000,
-};
-
-// ── Uplink callback ──────────────────────────────────────────────────────
 #ifdef __cplusplus
 extern "C" {
 #endif
-void myStatusCallback(void* data, bool success) {
-    Serial.println(success ? "Uplink OK" : "Uplink FAILED");
+
+struct __attribute__((packed)) BatonPacket {
+  uint8_t batonID;
+  int buttonPressed;
+  float latitude;
+  float longitude;
+} myPkt;
+
+void myStatusCallback(void * data, bool success){
+  if(success)
+    Serial.println("Succeeded!");
+  else
+    Serial.println("Failed!");
 }
-#ifdef __cplusplus
+
+#ifdef __cplusplus 
 }
 #endif
 
-// ── Helpers ───────────────────────────────────────────────────────────────
-float readBatteryVoltage() {
-    // Feather M0: battery divider on A9 (pin 9)
-    // Vbatt = analogRead(A9) * 2 * 3.3 / 1024
-    float measured = analogRead(A9) * (2.0f * 3.3f / 1024.0f);
-    return measured;
-}
+// ── LoRaWAN class ──
+class cMyLoRaWAN : public Arduino_LoRaWAN_ttn {
+public:
+  cMyLoRaWAN() {}
+protected:
+  virtual bool GetOtaaProvisioningInfo(Arduino_LoRaWAN::OtaaProvisioningInfo*) override;
+  virtual void NetSaveSessionInfo(const SessionInfo&, const uint8_t*, size_t) override;
+  virtual void NetSaveSessionState(const SessionState&) override;
+  virtual bool NetGetSessionState(SessionState&) override;
+  virtual bool GetAbpProvisioningInfo(Arduino_LoRaWAN::AbpProvisioningInfo*) override;
+};
+cMyLoRaWAN myLoRaWAN {};
 
-void sendPacket() {
-    // TODO: replace 1.0f placeholders with real GPS data when module is wired:
-    //
-    //   while (Serial1.available()) gps.encode(Serial1.read());
-    //   if (gps.location.isValid()) {
-    //       myPkt.latitude  = (float)gps.location.lat();
-    //       myPkt.longitude = (float)gps.location.lng();
-    //   }
+// ── Pin Map ──
+const cMyLoRaWAN::lmic_pinmap myPinMap = {
+  .nss = 8,
+  .rxtx = cMyLoRaWAN::lmic_pinmap::LMIC_UNUSED_PIN,
+  .rst = 4,
+  .dio = { 3, 6, cMyLoRaWAN::lmic_pinmap::LMIC_UNUSED_PIN },
+  .rxtx_rx_active = 0,
+  .rssi_cal = 0,
+  .spi_freq = 8000000,
+};
 
-    myPkt.batonID     = BATON_ID;
-    myPkt.racerNumber = racerNumber;
-    myPkt.latitude    = 1.0f;    // TODO: replace with gps.location.lat()
-    myPkt.longitude   = 1.0f;   // TODO: replace with gps.location.lng()
-    myPkt.battery     = readBatteryVoltage();
-
-    Serial.print("Sending packet — baton=");
-    Serial.print(myPkt.batonID);
-    Serial.print(" racer=");
-    Serial.print(myPkt.racerNumber);
-    Serial.print(" lat=");
-    Serial.print(myPkt.latitude, 6);
-    Serial.print(" lon=");
-    Serial.print(myPkt.longitude, 6);
-    Serial.print(" batt=");
-    Serial.println(myPkt.battery, 2);
-
-    myLoRaWAN.SendBuffer(
-        (uint8_t*)&myPkt, sizeof(myPkt),
-        myStatusCallback, nullptr, false, 1
-    );
-}
-
-// ── Setup ─────────────────────────────────────────────────────────────────
+// ── Setup ──
 void setup() {
-    pinMode(BUTTON_PIN, INPUT_PULLUP);
-    Serial.begin(115200);
-
-    // Wait for Serial — timeout after 5 s so the board works without USB
-    unsigned long t0 = millis();
-    while (!Serial && millis() - t0 < 5000) {}
-
-    // TODO: start GPS serial when module is wired
-    // Serial1.begin(9600);
-
-    myLoRaWAN.begin(myPinMap);
-    Serial.print("LMIC time: "); Serial.println(os_getTime());
-    Serial.println(myLoRaWAN.IsProvisioned() ? "Provisioned (OTAA)" : "Not provisioned.");
-
-    lastTxTime = millis();
-    sendPacket();   // send immediately on boot
+  Serial.begin(115200);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(OUTPUT_PIN, OUTPUT);
+  digitalWrite(OUTPUT_PIN, HIGH);
+  buttonState = true;
+  {
+    uint64_t lt = millis();
+    while(!Serial && millis() - lt < 5000);
+  }
+  myLoRaWAN.begin(myPinMap);
+  Serial.println("LMIC radio init status: ");
+  Serial.println(os_getTime());
+  lastTime = millis();
+  Serial.println("Serial begin");
+  
+  if(myLoRaWAN.IsProvisioned()){
+    Serial.println("Provisioned for something");
+  }else{
+    Serial.println("Not provisioned.");
+    myLoRaWAN.SendBuffer((uint8_t *) &myPkt, sizeof(myPkt), myStatusCallback, NULL, false, 1);
+  }
 }
 
-// ── Loop ──────────────────────────────────────────────────────────────────
+// ── Loop ──
 void loop() {
-    myLoRaWAN.loop();
-
-    // ── Debounced button read ───────────────────────────────────────────
-    bool reading = digitalRead(BUTTON_PIN);
-    if (reading != pendingButtonRead) {
-        lastDebounceTime = millis();
-        pendingButtonRead = reading;
+  myLoRaWAN.loop();
+  
+  // Check if buffer interval has elapsed
+  if (millis() - lastTime > buffer_interval){
+    // If button was pressed during the interval, update the count
+    if(buttonState == 0){  // FIXED: was = instead of ==
+      buttonPressed++;
     }
-    if (millis() - lastDebounceTime > DEBOUNCE_MS) {
-        // State has been stable for DEBOUNCE_MS
-        if (lastButtonState == HIGH && pendingButtonRead == LOW) {
-            // Rising edge (press)
-            racerNumber = (racerNumber % MAX_RACER) + 1;
-            Serial.print("Racer number → "); Serial.println(racerNumber);
-        }
-        lastButtonState = pendingButtonRead;
+    
+    messageBuffer[0]++; 
+    sendPacket();
+    lastTime = millis();
+    buttonState = true;  // Reset button state for next interval
+  }
+  
+  // Monitor button press during interval
+  if(buttonState){ // True = 1, Not Pressed
+    buttonState = (digitalRead(BUTTON_PIN) == HIGH);
+    if(!buttonState){
+      Serial.println("Button Pressed Within Interval");
     }
-
-    // ── Periodic uplink ────────────────────────────────────────────────
-    if (millis() - lastTxTime >= TX_INTERVAL_MS) {
-        sendPacket();
-        lastTxTime = millis();
-    }
+  }
 }
 
-// ── LoRaWAN provisioning stubs ───────────────────────────────────────────
+// ── LoRaWAN Provisioning Stubs ──
 bool cMyLoRaWAN::GetOtaaProvisioningInfo(OtaaProvisioningInfo* pInfo) {
-    if (pInfo) {
-        memcpy_P(pInfo->AppEUI, APPEUI, 8);
-        memcpy_P(pInfo->DevEUI, DEVEUI, 8);
-        memcpy_P(pInfo->AppKey, APPKEY, 16);
-    }
-    return true;
+  if (pInfo) {
+    memcpy_P(pInfo->AppEUI, APPEUI, 8);
+    memcpy_P(pInfo->DevEUI, DEVEUI, 8);
+    memcpy_P(pInfo->AppKey, APPKEY, 16);
+  }
+  return true;
 }
+
 void cMyLoRaWAN::NetSaveSessionInfo(const SessionInfo&, const uint8_t*, size_t) {}
 void cMyLoRaWAN::NetSaveSessionState(const SessionState&) {}
 bool cMyLoRaWAN::NetGetSessionState(SessionState& State) { return false; }
 bool cMyLoRaWAN::GetAbpProvisioningInfo(Arduino_LoRaWAN::AbpProvisioningInfo*) { return false; }
+
+// ── Helpers ──
+void sendPacket() {
+  myPkt.batonID = BATON_ID;
+  myPkt.buttonPressed = buttonPressed;
+  myPkt.latitude = 42.4440f;
+  myPkt.longitude = -76.5019f;
+
+  Serial.print("Baton ID = ");
+  Serial.print(myPkt.batonID);
+  Serial.print(" Button Pressed = ");
+  Serial.print(myPkt.buttonPressed);
+  Serial.print(" Lat. = ");
+  Serial.print(myPkt.latitude, 6);
+  Serial.print(" Long. = ");
+  Serial.println(myPkt.longitude, 6);
+
+  myLoRaWAN.SendBuffer(
+    (uint8_t*)&myPkt, sizeof(myPkt),
+    myStatusCallback, nullptr, false, 1
+  );
+}
