@@ -19,6 +19,8 @@
 #include <lmic.h>
 #include <hal/hal.h>
 #include "keys.h"
+#include <TinyGPS++.h>
+TinyGPSPlus gps;
 
 // ── Baton Constants ──
 const uint8_t BATON_ID = 1;
@@ -84,6 +86,7 @@ const cMyLoRaWAN::lmic_pinmap myPinMap = {
 // ── Setup ──
 void setup() {
   Serial.begin(115200);
+  Serial1.begin(9600);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(OUTPUT_PIN, OUTPUT);
   digitalWrite(OUTPUT_PIN, HIGH);
@@ -109,24 +112,27 @@ void setup() {
 // ── Loop ──
 void loop() {
   myLoRaWAN.loop();
-  
-  // Check if buffer interval has elapsed
-  if (millis() - lastTime > buffer_interval){
-    // If button was pressed during the interval, update the count
-    if(buttonState == 0){  // FIXED: was = instead of ==
+
+  // Feed GPS parser continuously
+  while (Serial1.available()) {
+    gps.encode(Serial1.read());
+  }
+
+  // ── LoRa transmit on interval ──
+  if (millis() - lastTime > buffer_interval) {
+    if (buttonState == 0) {
       buttonPressed++;
     }
-    
-    messageBuffer[0]++; 
+    messageBuffer[0]++;
     sendPacket();
     lastTime = millis();
-    buttonState = true;  // Reset button state for next interval
+    buttonState = true;
   }
-  
-  // Monitor button press during interval
-  if(buttonState){ // True = 1, Not Pressed
+
+  // ── Monitor button press during interval ──
+  if (buttonState) {
     buttonState = (digitalRead(BUTTON_PIN) == HIGH);
-    if(!buttonState){
+    if (!buttonState) {
       Serial.println("Button Pressed Within Interval");
     }
   }
@@ -149,19 +155,27 @@ bool cMyLoRaWAN::GetAbpProvisioningInfo(Arduino_LoRaWAN::AbpProvisioningInfo*) {
 
 // ── Helpers ──
 void sendPacket() {
-  myPkt.batonID = BATON_ID;
-  myPkt.buttonPressed = buttonPressed;
-  myPkt.latitude = 42.4440f;
-  myPkt.longitude = -76.5019f;
+  // Drain any remaining GPS bytes before sampling
+  while (Serial1.available()) {
+    gps.encode(Serial1.read());
+  }
 
-  Serial.print("Baton ID = ");
-  Serial.print(myPkt.batonID);
-  Serial.print(" Button Pressed = ");
-  Serial.print(myPkt.buttonPressed);
-  Serial.print(" Lat. = ");
-  Serial.print(myPkt.latitude, 6);
-  Serial.print(" Long. = ");
-  Serial.println(myPkt.longitude, 6);
+  myPkt.batonID       = BATON_ID;
+  myPkt.buttonPressed = buttonPressed;
+
+  if (gps.location.isValid() && gps.location.age() < 2000) {
+    myPkt.latitude  = gps.location.lat();
+    myPkt.longitude = gps.location.lng();
+  } else {
+    myPkt.latitude  = 0.0f;
+    myPkt.longitude = 0.0f;
+    Serial.println("⚠ GPS fix not yet valid — sending 0,0");
+  }
+
+  Serial.print("Baton ID = ");       Serial.print(myPkt.batonID);
+  Serial.print(" | Button Pressed = "); Serial.print(myPkt.buttonPressed);
+  Serial.print(" | Lat = ");         Serial.print(myPkt.latitude,  6);
+  Serial.print(" | Lon = ");         Serial.println(myPkt.longitude, 6);
 
   myLoRaWAN.SendBuffer(
     (uint8_t*)&myPkt, sizeof(myPkt),
