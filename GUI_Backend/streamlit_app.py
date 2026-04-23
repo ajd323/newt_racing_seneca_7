@@ -6,6 +6,7 @@ import json
 import queue
 import ssl
 import time
+import uuid
 
 import folium
 import pandas as pd
@@ -37,21 +38,45 @@ if "mqtt_status" not in st.session_state:
 if "prev_button_counts" not in st.session_state:
     st.session_state.prev_button_counts = {}  # device_id -> last buttonPressed value
 
+if "mqtt_client" not in st.session_state:
+    st.session_state.mqtt_client = None
+
 # ── MQTT callbacks ──────────────────────────────────────────────────────────
 def on_connect(client, userdata, flags, rc):
+    error_messages = {
+        0: "connected",
+        1: "incorrect protocol version",
+        2: "invalid client identifier", 
+        3: "server unavailable",
+        4: "bad username or password",
+        5: "not authorized",
+        7: "no supported authentication method"
+    }
+    
     if rc == 0:
         client.subscribe(TOPIC, qos=1)
         userdata.put({"_status": "connected"})
+        print(f"✅ Connected successfully to {BROKER}")
     else:
-        userdata.put({"_status": f"connect failed rc={rc}"})
+        msg = error_messages.get(rc, f"unknown error {rc}")
+        userdata.put({"_status": f"❌ {msg}"})
+        print(f"❌ Connection failed: {msg} (rc={rc})")
 
 def on_disconnect(client, userdata, rc):
-    userdata.put({"_status": f"disconnected rc={rc}"})
+    error_messages = {
+        0: "disconnected (normal)",
+        5: "disconnected (not authorized)",
+        7: "disconnected (no auth method)"
+    }
+    msg = error_messages.get(rc, f"disconnected rc={rc}")
+    userdata.put({"_status": msg})
+    print(f"🔌 Disconnected: {msg}")
 
 def on_message(client, userdata, msg):
     try:
         raw = json.loads(msg.payload.decode())
-    except Exception:
+    except Exception as e:
+        print(f"⚠️  Failed to parse message: {e}")
         return
 
     uplink = raw.get("uplink_message", {})
@@ -69,24 +94,46 @@ def on_message(client, userdata, msg):
         "snr"           : rx.get("snr"),
     }
     userdata.put(row)
+    print(f"📨 Message received from baton {row.get('baton_id')}")
 
 # ── Start MQTT exactly once per session ─────────────────────────────────────
-if "mqtt_started" not in st.session_state:
+if st.session_state.mqtt_client is None:
     q = st.session_state.msg_queue
+    
     client = mqtt.Client(
-        client_id=f"newt-racing-{int(time.time())}",
+        client_id=f"newt-racing-{uuid.uuid4().hex[:12]}",
         protocol=mqtt.MQTTv311,
     )
+    
+    # Set credentials
     client.username_pw_set(MQTT_USER, MQTT_PASS)
-    client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
-    client.tls_insecure_set(False)
+    
+    # TLS setup with explicit TLS 1.2
+    client.tls_set(
+        ca_certs=None,  # Use system CA bundle
+        certfile=None,
+        keyfile=None,
+        cert_reqs=ssl.CERT_REQUIRED,
+        tls_version=ssl.PROTOCOL_TLSv1_2,
+        ciphers=None
+    )
+    
+    # Set callbacks
     client.user_data_set(q)
     client.on_connect    = on_connect
     client.on_disconnect = on_disconnect
     client.on_message    = on_message
-    client.connect(BROKER, PORT, keepalive=60)
-    client.loop_start()
-    st.session_state.mqtt_started = True
+    
+    # Connect
+    try:
+        print(f"🔌 Attempting connection to {BROKER}:{PORT}")
+        client.connect(BROKER, PORT, keepalive=60)
+        client.loop_start()
+        st.session_state.mqtt_client = client
+        print("✅ MQTT client started")
+    except Exception as e:
+        st.session_state.mqtt_status = f"Connection failed: {e}"
+        print(f"❌ Connection exception: {e}")
 
 # ── Drain queue → session state (main thread only) ──────────────────────────
 q = st.session_state.msg_queue
@@ -115,6 +162,7 @@ while not q.empty():
 
         st.session_state.prev_button_counts[device_id] = current_count
 
+# Keep last 500 messages
 st.session_state.messages = st.session_state.messages[-500:]
 
 # ── UI ───────────────────────────────────────────────────────────────────────
