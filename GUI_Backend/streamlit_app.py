@@ -7,6 +7,7 @@ import queue
 import ssl
 import time
 import uuid
+from datetime import datetime
 
 import folium
 import pandas as pd
@@ -22,24 +23,62 @@ BROKER    = "nam1.cloud.thethings.network"
 PORT      = 8883
 TOPIC     = f"v3/{APP_ID}@ttn/devices/+/up"
 
+# File paths for persistent storage
+MESSAGES_FILE = "baton_messages.json"
+BUTTON_EVENTS_FILE = "button_events.json"
+
+# ── Helper Functions for Persistence ────────────────────────────────────────
+def load_data():
+    """Load saved messages and button events from disk"""
+    try:
+        with open(MESSAGES_FILE, 'r') as f:
+            messages = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        messages = []
+    
+    try:
+        with open(BUTTON_EVENTS_FILE, 'r') as f:
+            button_events = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        button_events = []
+    
+    return messages, button_events
+
+def save_data(messages, button_events):
+    """Save messages and button events to disk"""
+    try:
+        with open(MESSAGES_FILE, 'w') as f:
+            json.dump(messages, f)
+        with open(BUTTON_EVENTS_FILE, 'w') as f:
+            json.dump(button_events, f)
+    except Exception as e:
+        print(f"⚠️  Failed to save data: {e}")
+
 # ── Session-state initialisation ────────────────────────────────────────────
 if "msg_queue" not in st.session_state:
     st.session_state.msg_queue = queue.Queue()
 
 if "messages" not in st.session_state:
-    st.session_state.messages = []
+    # Load from disk on first run
+    saved_messages, saved_events = load_data()
+    st.session_state.messages = saved_messages
+    st.session_state.button_events = saved_events
+    print(f"📂 Loaded {len(saved_messages)} messages and {len(saved_events)} button events from disk")
 
 if "button_events" not in st.session_state:
-    st.session_state.button_events = []  # list of {lat, lon, time, baton_id}
+    st.session_state.button_events = []
 
 if "mqtt_status" not in st.session_state:
     st.session_state.mqtt_status = "Not connected"
 
 if "prev_button_counts" not in st.session_state:
-    st.session_state.prev_button_counts = {}  # device_id -> last buttonPressed value
+    st.session_state.prev_button_counts = {}
 
 if "mqtt_client" not in st.session_state:
     st.session_state.mqtt_client = None
+
+if "data_saved" not in st.session_state:
+    st.session_state.data_saved = False
 
 # ── MQTT callbacks ──────────────────────────────────────────────────────────
 def on_connect(client, userdata, flags, rc):
@@ -110,7 +149,7 @@ if st.session_state.mqtt_client is None:
     
     # TLS setup with explicit TLS 1.2
     client.tls_set(
-        ca_certs=None,  # Use system CA bundle
+        ca_certs=None,
         certfile=None,
         keyfile=None,
         cert_reqs=ssl.CERT_REQUIRED,
@@ -137,12 +176,15 @@ if st.session_state.mqtt_client is None:
 
 # ── Drain queue → session state (main thread only) ──────────────────────────
 q = st.session_state.msg_queue
+new_data_received = False
+
 while not q.empty():
     item = q.get_nowait()
     if "_status" in item:
         st.session_state.mqtt_status = item["_status"]
     else:
         st.session_state.messages.append(item)
+        new_data_received = True
 
         # ── Button press detection ──
         device_id = item.get("device_id", "")
@@ -165,15 +207,85 @@ while not q.empty():
 # Keep last 500 messages
 st.session_state.messages = st.session_state.messages[-500:]
 
+# Save data to disk whenever new data arrives
+if new_data_received:
+    save_data(st.session_state.messages, st.session_state.button_events)
+    print("💾 Data auto-saved to disk")
+
 # ── UI ───────────────────────────────────────────────────────────────────────
 st.title("🏃 Newt Racing — Seneca 7 Live Baton Tracker")
 
-status_color = "🟢" if st.session_state.mqtt_status == "connected" else "🔴"
-st.caption(
-    f"{status_color} MQTT: {st.session_state.mqtt_status}  |  "
-    f"Packets received: {len(st.session_state.messages)}  |  "
-    f"Button events: {len(st.session_state.button_events)}"
-)
+# ── Status Bar ───────────────────────────────────────────────────────────────
+col1, col2 = st.columns([3, 1])
+
+with col1:
+    status_color = "🟢" if st.session_state.mqtt_status == "connected" else "🔴"
+    st.caption(
+        f"{status_color} MQTT: {st.session_state.mqtt_status}  |  "
+        f"Packets received: {len(st.session_state.messages)}  |  "
+        f"Button events: {len(st.session_state.button_events)}"
+    )
+
+with col2:
+    # Control buttons in a row
+    btn_col1, btn_col2 = st.columns(2)
+    
+    with btn_col1:
+        if st.button("🗑️ Clear All", type="secondary", use_container_width=True):
+            st.session_state.messages = []
+            st.session_state.button_events = []
+            st.session_state.prev_button_counts = {}
+            save_data([], [])
+            st.success("✅ All data cleared!")
+            st.rerun()
+    
+    with btn_col2:
+        if st.button("💾 Export CSV", type="primary", use_container_width=True):
+            st.session_state.data_saved = True
+
+# ── CSV Export Section ──────────────────────────────────────────────────────
+if st.session_state.data_saved and st.session_state.messages:
+    st.success("✅ Data ready for download!")
+    
+    # Prepare messages CSV
+    df_messages = pd.DataFrame(st.session_state.messages)
+    df_messages["time"] = pd.to_datetime(df_messages["time"], utc=True, errors="coerce")
+    csv_messages = df_messages.to_csv(index=False)
+    
+    # Prepare button events CSV
+    if st.session_state.button_events:
+        df_events = pd.DataFrame(st.session_state.button_events)
+        df_events["time"] = pd.to_datetime(df_events["time"], utc=True, errors="coerce")
+        csv_events = df_events.to_csv(index=False)
+    else:
+        csv_events = "No button events recorded"
+    
+    # Download buttons
+    dl_col1, dl_col2 = st.columns(2)
+    
+    with dl_col1:
+        st.download_button(
+            label="📥 Download All Messages",
+            data=csv_messages,
+            file_name=f"baton_messages_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    
+    with dl_col2:
+        if st.session_state.button_events:
+            st.download_button(
+                label="📥 Download Button Events",
+                data=csv_events,
+                file_name=f"button_events_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+    
+    # Reset the flag
+    if st.button("✖️ Close", use_container_width=True):
+        st.session_state.data_saved = False
+        st.rerun()
 
 msgs = st.session_state.messages
 
