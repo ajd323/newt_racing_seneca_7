@@ -18,7 +18,7 @@ from streamlit_folium import st_folium
 # ── Config ─────────────────────────────────────────────────────────────────
 APP_ID    = "ssr-baton-test"
 MQTT_USER = "ssr-baton-test@ttn"
-MQTT_PASS = "NNSXS.HC44IYOXPXG24ZZ6B4CFFMTNBT4XTMSOTBDM5BI.BXF4FCIH6K4PAJDTQIXWTTTMISZZ7QP6UBSZKMXXVRDSCEZ7EZRQ"
+MQTT_PASS = "NNSXS.RJKCGOTPCPZSWGZIG6635PUORTBIW2C5P3EE3ZI.XN6WGYLKDEF2AWNFC5P4SUF4PAGRAAHKUVXUIZSXV2FDVSHSHL7Q"
 BROKER    = "nam1.cloud.thethings.network"
 PORT      = 8883
 TOPIC     = f"v3/{APP_ID}@ttn/devices/+/up"
